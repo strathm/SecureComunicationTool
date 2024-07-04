@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+
+{% block title %}
+    Sent Messages
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h2>Sent Messages</h2>
+    <div class="message-list">
+        {% for message in messages %}
+        <div class="message-card">
+            <div class="message-info">
+                <p><strong>To:</strong> {{ message.recipient.username }}</p>
+                <p><strong>Content:</strong> {{ message.content }}</p>
+                <p><strong>Timestamp:</strong> {{ message.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+            </div>
+        </div>
+        {% endfor %}
+        {% if not messages %}
+        <p>No sent messages yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
