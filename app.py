@@ -1,24 +1,29 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, abort
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 from forms import LoginForm, RegisterForm, MessageForm
-from encryption import encrypt_message, decrypt_message, generate_keypair  # Added encryption functions
-from models import User, Message, db
-from flask_migrate import Migrate
+from encryption import encrypt_message, decrypt_message, generate_keypair
+from extensions import db
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
+from flask_migrate import Migrate
 
+
+# Initialize Flask application
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your_secret_key_here'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Initialize extensions
 db.init_app(app)
 migrate = Migrate(app, db)
 
+# Initialize Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
+login_manager.login_view = 'login'
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -27,23 +32,66 @@ def load_user(user_id):
 def fetch_or_generate_public_key(user_id):
     user = User.query.get(user_id)
     if user and user.public_key:
-        # Deserialize the stored PEM-encoded public key back to RSAPublicKey object
         public_key = serialization.load_pem_public_key(
-            user.public_key.encode(),  # Assuming stored as PEM-encoded string
+            user.public_key.encode(),
             backend=default_backend()
         )
         return public_key
     else:
-        # Generate new keypair and store public key
         private_key, public_key = generate_keypair()
-        # Serialize the public key to PEM format for storage
         pem_public_key = public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         ).decode()
-        user.public_key = pem_public_key  # Store public key as PEM-encoded string in database
+        user.public_key = pem_public_key
         db.session.commit()
         return public_key
+
+# Define contacts table for many-to-many relationship
+contacts = db.Table('contacts',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('contact_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    extend_existing=True  # Prevents redefinition error
+)
+
+# Define User model
+class User(UserMixin, db.Model):
+    __tablename__ = 'user'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(150), unique=True, nullable=False)
+    password = db.Column(db.String(150), nullable=False)
+    public_key = db.Column(db.String(500))  # Adding public_key field for encryption
+    private_key = db.Column(db.String(500))  # Adding private_key field for decryption
+
+    # Relationships for messages sent and received
+    sent_messages = db.relationship('Message', back_populates='sender', lazy=True, foreign_keys='Message.sender_id')
+    received_messages = db.relationship('Message', back_populates='recipient', lazy=True, foreign_keys='Message.recipient_id')
+
+    # Define contacts relationship for many-to-many
+    contacts = db.relationship(
+        'User',
+        secondary=contacts,
+        primaryjoin='User.id == contacts.c.user_id',
+        secondaryjoin='User.id == contacts.c.contact_id',
+        backref=db.backref('contacted_by', lazy='dynamic'),
+        lazy=True
+    )
+
+# Define Message model
+class Message(db.Model):
+    __tablename__ = 'message'
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text, nullable=False)
+    plaintext_content = db.Column(db.Text)  # Adding plaintext_content field for storing unencrypted message
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    recipient_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+    # Relationships with back_populates
+    sender = db.relationship('User', back_populates='sent_messages', foreign_keys=[sender_id])
+    recipient = db.relationship('User', back_populates='received_messages', foreign_keys=[recipient_id])
+
+# Routes
 
 @app.route('/')
 def index():
@@ -74,7 +122,6 @@ def register():
         db.session.add(new_user)
         db.session.commit()
 
-        # Fetch existing users and add them as contacts for the new user
         existing_users = User.query.filter(User.id != new_user.id).all()
         for user in existing_users:
             new_user.contacts.append(user)
@@ -96,23 +143,26 @@ def logout():
 @login_required
 def send_message():
     form = MessageForm()
-    form.set_choices(current_user.id)  # Set recipient choices for the current user
+    form.set_choices()
 
     if form.validate_on_submit():
         recipient = User.query.get(form.recipient.data)
         if recipient:
-            # Fetch or generate public key for encryption
             public_key = fetch_or_generate_public_key(recipient.id)
             if not public_key:
                 flash('Recipient does not have a public key set.', 'error')
                 return redirect(url_for('send_message'))
 
-            # Encrypt the message
             encrypted_message = encrypt_message(form.message.data, public_key)
             if encrypted_message:
                 try:
-                    # Create and save the message
-                    new_message = Message(content=encrypted_message, sender=current_user, recipient=recipient, timestamp=datetime.utcnow())
+                    new_message = Message(
+                        content=encrypted_message,
+                        plaintext_content=form.message.data,
+                        sender=current_user,
+                        recipient=recipient,
+                        timestamp=datetime.utcnow()
+                    )
                     db.session.add(new_message)
                     db.session.commit()
                     flash('Message sent successfully', 'success')
@@ -121,10 +171,8 @@ def send_message():
                     db.session.rollback()
             else:
                 flash('Failed to encrypt the message.', 'error')
-
         else:
             flash('Recipient not found', 'error')
-
     return render_template('send_message.html', form=form)
 
 @app.route('/inbox')
@@ -136,11 +184,10 @@ def inbox():
 @app.route('/message/<int:message_id>')
 @login_required
 def view_message(message_id):
-    message = Message.query.get_or_404(message_id)
+    message = Message.query.get(message_id)
     if message.recipient != current_user:
         abort(403)
-    decrypted_message = decrypt_message(message.content, current_user.private_key)
-    return render_template('view_message.html', message=message, decrypted_message=decrypted_message)
+    return render_template('view_message.html', message=message)
 
 @app.route('/members')
 @login_required
@@ -152,6 +199,21 @@ def members():
 @login_required
 def sent_messages():
     messages = Message.query.filter_by(sender=current_user).order_by(Message.timestamp.desc()).all()
+    
+    # Decrypt messages before passing them to the template
+    for message in messages:
+        if message.content:
+            private_key = current_user.private_key
+            if private_key:
+                try:
+                    decrypted_message = decrypt_message(message.content, private_key)
+                    message.plaintext_content = decrypted_message
+                except Exception as e:
+                    flash(f"Failed to decrypt message: {str(e)}", "error")
+                    message.plaintext_content = "Decryption failed"
+            else:
+                message.plaintext_content = "Private key not found"
+
     return render_template('sent_messages.html', messages=messages)
 
 if __name__ == '__main__':

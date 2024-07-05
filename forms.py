@@ -1,6 +1,9 @@
+# forms.py
+
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField, SubmitField, BooleanField, TextAreaField, SelectField
 from wtforms.validators import DataRequired, Length, EqualTo
+from flask_login import current_user
 from models import User
 
 class LoginForm(FlaskForm):
@@ -20,9 +23,8 @@ class MessageForm(FlaskForm):
     submit = SubmitField('Send')
     recipient = SelectField('Recipient', coerce=int, validators=[DataRequired()])
 
-    def set_choices(self, user_id):
-        user = User.query.get(user_id)
-        if user:
-            self.recipient.choices = [(contact.id, contact.username) for contact in user.contacts]
+    def set_choices(self):
+        if current_user:
+            self.recipient.choices = [(contact.id, contact.username) for contact in current_user.contacts]
         else:
             self.recipient.choices = []

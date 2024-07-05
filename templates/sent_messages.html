@@ -5,20 +5,22 @@
 {% endblock %}
 
 {% block content %}
-<div class="container">
-    <h2>Sent Messages</h2>
+<div class="container mt-4">
+    <h2 class="mb-4">Sent Messages</h2>
     <div class="message-list">
         {% for message in messages %}
-        <div class="message-card">
-            <div class="message-info">
-                <p><strong>To:</strong> {{ message.recipient.username }}</p>
-                <p><strong>Content:</strong> {{ message.content }}</p>
-                <p><strong>Timestamp:</strong> {{ message.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+        <div class="card mb-3">
+            <div class="card-body">
+                <h5 class="card-title">To: {{ message.recipient.username }}</h5>
+                <p class="card-text"><strong>Content:</strong> {{ message.content }}</p>
+                <p class="card-text"><strong>Timestamp:</strong> {{ message.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</p>
             </div>
         </div>
         {% endfor %}
         {% if not messages %}
-        <p>No sent messages yet.</p>
+        <div class="alert alert-info" role="alert">
+            No sent messages yet.
+        </div>
         {% endif %}
     </div>
 </div>
